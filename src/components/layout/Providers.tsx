@@ -26,8 +26,8 @@ export function Providers({ children }: { children: ReactNode }) {
         }}
       >
         {children}
+        <ModalHost />
       </CavosProvider>
-      <ModalHost />
       <Toast />
     </QueryClientProvider>
   );

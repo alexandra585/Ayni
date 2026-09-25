@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { useCavos } from "@cavos/kit/react";
 import { Badge } from "@/components/ui/Badge";
 import { Icon } from "@/components/ui/Icon";
 import { Sheet, SheetHead } from "@/components/ui/Sheet";
@@ -10,14 +11,16 @@ import { useAyni } from "@/store/ayni";
 import { useUi } from "@/store/ui";
 import { ProcSteps, useRail, useSteps } from "./shared";
 
-type Phase = { t: "form" } | { t: "processing" } | { t: "done"; hash: string };
+type Phase = { t: "form" } | { t: "processing" } | { t: "done"; hash: string; amount: string };
 
 /** Pagar mi cuota (fondo común): formulario → procesando → comprobante. */
 export function PayModal({ gid }: { gid: string }) {
   const { open, close, toast } = useUi.getState();
   const g = useAyni((x) => x.s.groups[gid]) as JuntaGroup;
   const bal = useAyni((x) => x.s.wallet?.bal ?? 0);
+  const { wallet } = useCavos();
   const rail = useRail();
+  const treasuryAddress = process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC;
   const me = g.members.me;
   const [due0] = useState(() => owed(g, me)); // el monto se fija al abrir; el estado cambia al registrar el pago
   const [paid0] = useState(() => me.paid);
@@ -30,9 +33,36 @@ export function PayModal({ gid }: { gid: string }) {
   useEffect(() => {
     if (phase.t !== "processing" || started.current) return;
     started.current = true;
-    rail
-      .payContribution({ groupId: gid, amount: due0 })
-      .then(({ hash }) => setPhase({ t: "done", hash }))
+    const pay = async () => {
+      if (rail.kind === "stellar-testnet") {
+        if (wallet?.chain !== "stellar" || wallet.status === "needs-device-approval") {
+          throw new Error("Conecta una wallet Cavos Stellar autorizada para continuar.");
+        }
+        if (!treasuryAddress?.startsWith("G")) {
+          throw new Error("No hay una dirección de tesorería Testnet válida configurada.");
+        }
+
+        const response = await fetch("/api/stellar/contribution?groupId=" + encodeURIComponent(gid), { cache: "no-store" });
+        const due = await response.json() as { ok?: boolean; amountStroops?: string; message?: string };
+        if (!response.ok || !due.ok || !due.amountStroops) {
+          throw new Error(due.message || "No tienes cuota pendiente.");
+        }
+
+        const amountStroops = BigInt(due.amountStroops);
+        if (amountStroops <= 0n) throw new Error("No tienes cuota pendiente.");
+        const hash = await wallet.execute(
+          amountStroops,
+          process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC!,
+        );
+        setPhase({ t: "done", hash, amount: xlm(Number(amountStroops) / 10_000_000) });
+        return;
+      }
+
+      const { hash } = await rail.payContribution({ groupId: gid, amount: due0 });
+      setPhase({ t: "done", hash, amount: xlm(due0) });
+    };
+
+    void pay()
       .catch((e) => {
         close();
         toast(e instanceof Error && e.message ? e.message : "No se pudo completar el pago");
@@ -54,16 +84,20 @@ export function PayModal({ gid }: { gid: string }) {
     return (
       <Sheet onClose={close}>
         <div style={{ textAlign: "center" }}>
-          <Badge tone="paid" icon="check" style={{ marginBottom: 12 }}>Pagó</Badge>
-          <h3 id="sh-t">Cuota pagada</h3>
-          <p className="muted" style={{ margin: "8px 0 4px" }}>{xlm(due0)} ya están bloqueados en la bóveda.</p>
+          <Badge tone="paid" icon="check" style={{ marginBottom: 12 }}>Transferencia enviada</Badge>
+          <h3 id="sh-t">Aporte transferido</h3>
+          <p className="muted" style={{ margin: "8px 0 4px" }}>{phase.amount} enviados a la tesorería Testnet.</p>
           <p className="caption num">tx {short(phase.hash)}</p>
           <button className="btn btn-primary btn-block" style={{ marginTop: 20 }} id="pay-ok" onClick={close} autoFocus>Listo</button>
         </div>
       </Sheet>
     );
 
-  const can = rail.canPay(due0);
+  const demoCanPay = rail.kind === "demo" ? rail.canPay(due0) : null;
+  const cavosCanPay =
+    wallet?.chain === "stellar" &&
+    wallet.status !== "needs-device-approval" &&
+    Boolean(treasuryAddress?.startsWith("G"));
   return (
     <Sheet onClose={close}>
       <SheetHead title={paid0 > 0 ? "Completar mi cuota" : "Pagar mi cuota"} onClose={close} />
@@ -75,15 +109,21 @@ export function PayModal({ gid }: { gid: string }) {
       ) : (
         <div className="bal-line" style={{ marginTop: 12 }}><span>Se pagará desde tu wallet Freighter</span><span>Stellar Testnet</span></div>
       )}
-      {can.ok ? (
+      {rail.kind === "demo" && demoCanPay?.ok ? (
         <button className="btn btn-primary btn-block" style={{ marginTop: 16 }} id="pay-go" autoFocus onClick={() => setPhase({ t: "processing" })}>
-          <Icon name="finger" />{rail.kind === "demo" ? "Confirmar con mi huella" : "Firmar con Freighter"}
+          <Icon name="finger" />Confirmar con mi huella
         </button>
-      ) : (
+      ) : rail.kind === "demo" && demoCanPay && !demoCanPay.ok ? (
         <div className="warn">
-          <span>Saldo insuficiente: te faltan {xlm(r2(can.missing))}</span>
+          <span>Saldo insuficiente: te faltan {xlm(r2(demoCanPay.missing))}</span>
           <button className="btn btn-accent btn-sm" id="pay-top" onClick={() => open({ t: "topup", ctx: { gid, need: r2(due0 - bal) } })}>Recargar billetera</button>
         </div>
+      ) : cavosCanPay ? (
+        <button className="btn btn-primary btn-block" style={{ marginTop: 16 }} id="pay-go" autoFocus onClick={() => setPhase({ t: "processing" })}>
+          <Icon name="finger" />Aportar con Cavos
+        </button>
+      ) : (
+        <div className="warn"><span>Conecta una wallet Cavos Stellar autorizada y configura el destino Testnet.</span></div>
       )}
       <p className="caption" style={{ marginTop: 14 }}>
         Solo tú puedes pagar tu cuota. Todo se paga en XLM y va directo a la bóveda. {rail.kind === "demo" ? "Pago simulado." : "MVP Testnet: no se mueve dinero real."}
