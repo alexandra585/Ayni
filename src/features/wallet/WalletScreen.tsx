@@ -20,6 +20,9 @@ export function WalletScreen() {
   const [stroops, setStroops] = useState<bigint | null>(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferTxHash, setTransferTxHash] = useState<string | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
   const s = useAyni((x) => x.s);
   const { disconnectWallet } = useAyni.getState();
   const open = useUi((u) => u.open);
@@ -34,6 +37,33 @@ export function WalletScreen() {
       : walletStatus.isUndeployed
         ? "Sin desplegar"
         : "Conectada";
+  const treasuryAddress = process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC;
+  const canSendTestXlm =
+    wallet?.chain === "stellar" &&
+    wallet.status !== "needs-device-approval" &&
+    Boolean(treasuryAddress?.startsWith("G"));
+
+  const sendTestXlm = async () => {
+    if (!canSendTestXlm || wallet?.chain !== "stellar") return;
+
+    setTransferLoading(true);
+    setTransferTxHash(null);
+    setTransferError(null);
+    try {
+      const txHash = await wallet.execute(
+        10_000_000n,
+        process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC!,
+      );
+      setTransferTxHash(txHash);
+      const updatedStroops = await wallet.balance();
+      setStroops(updatedStroops);
+      setBalanceError(null);
+    } catch (error) {
+      setTransferError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTransferLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!live || !isAuthenticated || !address?.startsWith("G")) return;
@@ -155,6 +185,18 @@ export function WalletScreen() {
               </div>
               <div className="v" role={balanceError ? "alert" : undefined}>
                 {balanceError ?? (balanceLoading ? "Cargando…" : stroops === null ? "— XLM" : xlm(Number(stroops) / 10_000_000))}
+              </div>
+            </li>
+            <li className="asset">
+              <span className="tok tok-xlm" aria-hidden="true">1</span>
+              <div>
+                {transferTxHash ? <small>Transacción: {transferTxHash}</small> : null}
+                {transferError ? <small className="err" role="alert">{transferError}</small> : null}
+              </div>
+              <div>
+                <button className="btn btn-secondary btn-sm" onClick={sendTestXlm} disabled={!canSendTestXlm || transferLoading}>
+                  {transferLoading ? "Enviando..." : "Enviar 1 XLM de prueba"}
+                </button>
               </div>
             </li>
           </ul>
