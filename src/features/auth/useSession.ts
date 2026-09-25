@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
+import { useCavos } from "@cavos/kit/react";
 import { useAyni } from "@/store/ayni";
 import { useUi } from "@/store/ui";
 
@@ -10,20 +11,33 @@ import { useUi } from "@/store/ui";
  */
 export function useSession() {
   const router = useRouter();
+  const { logout: logoutCavos } = useCavos();
   const logout = useAyni((s) => s.logout);
   const setLoggingOut = useUi((u) => u.setLoggingOut);
 
   const signOut = useCallback(async () => {
+    if (useUi.getState().loggingOut) return;
     setLoggingOut(true);
-    const { APP_MODE } = await import("@/config/app");
-    if (APP_MODE === "supabase") {
-      const { signOutSupabase } = await import("./supabase-auth");
-      await signOutSupabase();
+    let stage: "cavos" | "supabase" = "cavos";
+    try {
+      const { APP_MODE } = await import("@/config/app");
+      if (APP_MODE === "supabase") {
+        await logoutCavos();
+        stage = "supabase";
+        const { signOutSupabase } = await import("./supabase-auth");
+        await signOutSupabase();
+      }
+      useUi.getState().close();
+      logout();
+      router.replace("/login");
+      setTimeout(() => setLoggingOut(false), 300);
+    } catch {
+      setLoggingOut(false);
+      useUi.getState().toast(stage === "cavos"
+        ? "No se pudo cerrar la sesión Cavos. No se cerró Supabase. Reintenta antes de cambiar de usuario."
+        : "Cavos se desconectó, pero no se pudo cerrar Supabase. Reintenta cerrar sesión.");
     }
-    logout();
-    router.replace("/login");
-    setTimeout(() => setLoggingOut(false), 300);
-  }, [logout, router, setLoggingOut]);
+  }, [logoutCavos, logout, router, setLoggingOut]);
 
   return { signOut };
 }

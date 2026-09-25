@@ -27,5 +27,6 @@ export async function signUpSupabase({ email, password, name, phone, address }: 
 }
 
 export async function signOutSupabase(): Promise<void> {
-  await getSupabase().auth.signOut();
+  const { error } = await getSupabase().auth.signOut();
+  if (error) throw error;
 }
