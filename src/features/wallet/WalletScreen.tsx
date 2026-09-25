@@ -1,5 +1,5 @@
 "use client";
-import { useCavosAuth } from "@cavos/kit/react";
+import { useCavos } from "@cavos/kit/react";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { APP_MODE } from "@/config/app";
@@ -14,9 +14,12 @@ import { useUi } from "@/store/ui";
 
 /** /wallet — Billetera. */
 export function WalletScreen() {
-  const { isAuthenticated, address, walletStatus, openModal } = useCavosAuth();
+  const { isAuthenticated, address, wallet, walletStatus, openModal } = useCavos();
   const linkAttempted = useRef<string | null>(null);
   const [walletLinkError, setWalletLinkError] = useState<string | null>(null);
+  const [stroops, setStroops] = useState<bigint | null>(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
   const s = useAyni((x) => x.s);
   const { disconnectWallet } = useAyni.getState();
   const open = useUi((u) => u.open);
@@ -54,6 +57,31 @@ export function WalletScreen() {
       active = false;
     };
   }, [address, isAuthenticated, live]);
+
+  useEffect(() => {
+    if (wallet?.chain !== "stellar") {
+      setStroops(null);
+      setBalanceError(null);
+      setBalanceLoading(false);
+      return;
+    }
+
+    let active = true;
+    setStroops(null);
+    setBalanceError(null);
+    setBalanceLoading(true);
+    void wallet.balance().then((value) => {
+      if (active) setStroops(value);
+    }).catch(() => {
+      if (active) setBalanceError("No se pudo leer el saldo XLM.");
+    }).finally(() => {
+      if (active) setBalanceLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [address, wallet]);
 
   const mine = myGroupIds(s);
   const locked = mine.reduce((a, id) => {
@@ -125,7 +153,9 @@ export function WalletScreen() {
                 <b>Stellar Lumens (XLM)</b>
                 <small>Ayni opera solo con XLM: cuotas, aportes, pozos y devoluciones. Las comisiones de red las cubre Ayni.</small>
               </div>
-              <div className="v">{isAuthenticated ? cavosStatus : "—"}</div>
+              <div className="v" role={balanceError ? "alert" : undefined}>
+                {balanceError ?? (balanceLoading ? "Cargando…" : stroops === null ? "— XLM" : xlm(Number(stroops) / 10_000_000))}
+              </div>
             </li>
           </ul>
         </div>
