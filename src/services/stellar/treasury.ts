@@ -34,6 +34,27 @@ export async function sendFromTreasury(input: { to: string; amountStroops: bigin
     .setTimeout(60)
     .build();
   tx.sign(kp);
-  const res = await server.submitTransaction(tx);
-  return res.hash;
+  try {
+    const res = await server.submitTransaction(tx);
+    return res.hash;
+  } catch (error) {
+    // Solo campos permitidos: nunca serializar el error, request, headers ni XDR.
+    const object = (value: unknown): Record<string, unknown> =>
+      value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+    const err = object(error);
+    const response = object(err.response);
+    const data = object(response.data ?? err.response);
+    const codes = object(object(data.extras).result_codes);
+    const code = (value: unknown): string | null =>
+      typeof value === "string" && /^(?:tx|op)_[a-z0-9_]+$/.test(value) ? value : null;
+    const status = response.status ?? data.status ?? err.status;
+    console.error("[stellar-disposal] Horizon submitTransaction rejected", {
+      httpStatus: typeof status === "number" ? status : null,
+      result_codes: {
+        transaction: code(codes.transaction),
+        operations: Array.isArray(codes.operations) ? codes.operations.map(code).filter((value) => value !== null) : [],
+      },
+    });
+    throw error;
+  }
 }
