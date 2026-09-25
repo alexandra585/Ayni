@@ -3,13 +3,15 @@ import { z } from "zod";
 import { isSameOrigin } from "@/lib/same-origin";
 import { createSupabaseServer, createSupabaseService } from "@/lib/supabase/server";
 import { assertHorizonIsTestnet, fetchTxAndOps } from "@/services/stellar/horizon";
-import { treasuryPublicKey } from "@/services/stellar/treasury";
-import { memoForGroup, VERIFY_MESSAGES, verifyPayment } from "@/services/stellar/verify";
+import { StrKey } from "@stellar/stellar-sdk";
+import { VERIFY_MESSAGES, verifyPayment } from "@/services/stellar/verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const Body = z.object({ groupId: z.string().uuid(), txHash: z.string().regex(/^[0-9a-f]{64}$/, "hash inválido") });
+const Body = z.object({ groupId: z.string().uuid(), txHash: z.string().regex(/^[0-9a-f]{64}$/, "hash inválido") }).strict();
+
+const failure = (error: string, status = 500) => json({ ok: false, error, message: VERIFY_MESSAGES[error] ?? VERIFY_MESSAGES.record_failed }, status);
 
 const json = (body: Record<string, unknown>, status = 200) => NextResponse.json(body, { status });
 
@@ -20,18 +22,18 @@ export async function GET(req: Request) {
   try {
     const auth = await createSupabaseServer();
     const { data: u } = await auth.auth.getUser();
-    if (!u.user) return json({ ok: false, error: "unauthenticated" }, 401);
+    if (!u.user) return failure("unauthenticated", 401);
     const due = await createSupabaseService().rpc("contribution_due", { p_group: groupId, p_user: u.user.id });
     if (due.error || due.data == null || BigInt(String(due.data)) <= 0n) return json({ ok: false, error: "nothing_due", message: VERIFY_MESSAGES.nothing_due }, 409);
     return json({ ok: true, amountStroops: String(due.data) });
-  } catch (e) {
-    return json({ ok: false, error: "server_error", message: e instanceof Error ? e.message : "Error del servidor" }, 500);
+  } catch {
+    return failure("record_failed");
   }
 }
 
 /**
  * POST /api/stellar/contribution — registra el pago de una cuota SOLO después de verificarlo en Stellar Testnet.
- * Nunca confía en el navegador: consulta Horizon y compara red, éxito, destino, emisor, monto y memo.
+ * Consulta Horizon y compara red, éxito, destino, origen de la operación y monto.
  * MVP TESTNET ONLY.
  */
 export async function POST(req: Request) {
@@ -43,45 +45,66 @@ export async function POST(req: Request) {
   try {
     const auth = await createSupabaseServer();
     const { data: u } = await auth.auth.getUser();
-    if (!u.user) return json({ ok: false, error: "unauthenticated" }, 401);
+    if (!u.user) return failure("unauthenticated", 401);
     const userId = u.user.id;
     const svc = createSupabaseService();
 
-    // 0) reintento tras un corte de red: si este mismo hash ya quedó registrado para este usuario/grupo → éxito idempotente
-    const prev = await svc.from("contributions").select("id").eq("stellar_tx_hash", txHash).eq("user_id", userId).eq("group_id", groupId).maybeSingle();
-    if (prev.data) return json({ ok: true, duplicate: true, txHash });
+    // Buscar el hash globalmente para impedir su reutilización en otro grupo/usuario.
+    const recorded = async () => {
+      const prev = await svc.from("contributions").select("user_id, group_id").eq("stellar_tx_hash", txHash).maybeSingle();
+      if (prev.error) throw new Error("record_lookup_failed");
+      if (!prev.data) return null;
+      if (prev.data.user_id !== userId || prev.data.group_id !== groupId) return failure("tx_already_used", 409);
+      return json({ ok: true, duplicate: true, code: "already_recorded", txHash });
+    };
+    const previous = await recorded();
+    if (previous) return previous;
+
+    const w = await svc.from("wallet_accounts").select("stellar_address, network, provider").eq("user_id", userId).maybeSingle();
+    if (w.error) return failure("record_failed");
+    if (!w.data || w.data.network !== "TESTNET" || w.data.provider !== "cavos" ||
+        !StrKey.isValidEd25519PublicKey(w.data.stellar_address)) return failure("wallet_not_linked", 409);
+    const treasury = process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC;
+    if (!treasury || !StrKey.isValidEd25519PublicKey(treasury)) return failure("record_failed");
 
     // 1) ¿cuánto debe pagar este usuario? (lo decide la base de datos, no el cliente)
     const due = await svc.rpc("contribution_due", { p_group: groupId, p_user: userId });
     if (due.error) throw new Error(due.error.message);
-    if (due.data == null) return json({ ok: false, error: "not_member", message: VERIFY_MESSAGES.not_member }, 409);
+    if (due.data == null) return await recorded() ?? failure("not_member", 409);
     const amountStroops = BigInt(String(due.data));
-    if (amountStroops <= 0n) return json({ ok: false, error: "nothing_due", message: VERIFY_MESSAGES.nothing_due }, 409);
-
-    // 2) wallet registrada del pagador (si existe, el emisor debe coincidir)
-    const w = await svc.from("wallet_accounts").select("stellar_address").eq("user_id", userId).maybeSingle();
+    if (amountStroops <= 0n) return await recorded() ?? failure("nothing_due", 409);
 
     // 3) verificar en la red (Testnet) — nunca confiar solo en el hash
     await assertHorizonIsTestnet();
     const found = await fetchTxAndOps(txHash);
-    if (!found) return json({ ok: false, error: "tx_not_found", message: "No encontramos la transacción en Stellar Testnet." }, 404);
+    if (!found) return failure("invalid_tx", 404);
+    if (found.tx.hash !== txHash) return failure("invalid_tx", 422);
     const v = verifyPayment(found.tx, found.ops, {
-      treasury: treasuryPublicKey(),
+      treasury,
       amountStroops,
-      memo: memoForGroup(groupId),
-      from: w.data?.stellar_address ?? null,
+      from: w.data.stellar_address,
     });
-    if (!v.ok) return json({ ok: false, error: v.reason, message: VERIFY_MESSAGES[v.reason] }, 422);
+    if (!v.ok) {
+      const reason = v.reason === "no_payment_to_treasury" ? "wrong_destination"
+        : ["tx_failed", "multiple_payments", "wrong_asset"].includes(v.reason) ? "invalid_tx" : v.reason;
+      return failure(reason, 422);
+    }
 
     // 4) registro atómico (contribución + miembro + ledger + notificación); idempotente por hash
     const rec = await svc.rpc("record_contribution", {
       p_group: groupId, p_user: userId, p_amount: amountStroops.toString(), p_tx_hash: txHash, p_idem: "stellar:" + txHash,
     });
-    if (rec.error) throw new Error(rec.error.message);
-    const r = rec.data as { ok: boolean; error?: string; duplicate?: boolean };
-    if (!r.ok) return json({ ok: false, error: r.error, message: VERIFY_MESSAGES[r.error ?? ""] ?? "No se pudo registrar el pago." }, 409);
-    return json({ ok: true, duplicate: !!r.duplicate, txHash });
-  } catch (e) {
-    return json({ ok: false, error: "server_error", message: e instanceof Error ? e.message : "Error del servidor" }, 500);
+    const r = rec.data as { ok?: boolean; error?: string; duplicate?: boolean } | null;
+    if (rec.error || !r?.ok) {
+      // Otra petición pudo registrar el hash mientras esperábamos Horizon o el RPC.
+      const concurrent = await recorded();
+      if (concurrent) return concurrent;
+      const reason = r?.error === "hash_already_used" ? "tx_already_used"
+        : r?.error === "wrong_amount" ? "wrong_amount" : "record_failed";
+      return failure(reason, rec.error ? 500 : 409);
+    }
+    return json({ ok: true, duplicate: !!r.duplicate, ...(r.duplicate ? { code: "already_recorded" } : {}), txHash });
+  } catch {
+    return failure("record_failed");
   }
 }

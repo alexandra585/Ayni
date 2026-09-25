@@ -2,7 +2,7 @@
  * Verificación de pagos en Stellar Testnet. MVP TESTNET ONLY.
  *
  * Nunca se confía en el hash que envía el navegador: el servidor consulta Horizon y comprueba
- * red, éxito, destino, emisor, monto, memo (vínculo con el grupo) y que el hash sea nuevo.
+ * red y unicidad del hash. Aquí se comprueban éxito, destino, emisor, monto y memo opcional.
  * Estas funciones son puras (reciben las respuestas de Horizon) para poder probarlas sin red.
  */
 import { xlmToStroops } from "@/lib/money";
@@ -26,11 +26,11 @@ export interface HorizonOp {
 }
 
 export interface Expectation {
-  /** Dirección pública de la treasury (derivada en el servidor de STELLAR_TREASURY_SECRET). */
+  /** Dirección pública de la treasury configurada en el servidor. */
   treasury: string;
   amountStroops: bigint;
-  /** Memo de texto que liga la transacción al grupo (ver memoForGroup). */
-  memo: string;
+  /** Memo legacy opcional; Cavos no lo proporciona. */
+  memo?: string;
   /** Wallet registrada del pagador; si existe, el emisor debe coincidir. */
   from?: string | null;
 }
@@ -59,7 +59,7 @@ export function assertTestnetPassphrase(passphrase: string): void {
 
 export function verifyPayment(tx: HorizonTx, ops: HorizonOp[], expected: Expectation): VerifyResult {
   if (!tx.successful) return { ok: false, reason: "tx_failed" };
-  if (tx.memo_type !== "text" || tx.memo !== expected.memo) return { ok: false, reason: "wrong_memo" };
+  if (expected.memo !== undefined && (tx.memo_type !== "text" || tx.memo !== expected.memo)) return { ok: false, reason: "wrong_memo" };
 
   const toTreasury = ops.filter((o) => o.type === "payment" && o.to === expected.treasury);
   if (toTreasury.length === 0) return { ok: false, reason: "no_payment_to_treasury" };
@@ -75,12 +75,20 @@ export function verifyPayment(tx: HorizonTx, ops: HorizonOp[], expected: Expecta
   }
   if (paid !== expected.amountStroops) return { ok: false, reason: "wrong_amount" };
 
-  const from = op.from ?? op.source_account ?? tx.source_account;
+  const from = op.from ?? op.source_account;
+  if (!from) return { ok: false, reason: "wrong_source" };
   if (expected.from && from !== expected.from) return { ok: false, reason: "wrong_source" };
   return { ok: true, from, amountStroops: paid };
 }
 
 export const VERIFY_MESSAGES: Record<VerifyFailure | string, string> = {
+  unauthenticated: "Inicia sesión para registrar el aporte.",
+  wallet_not_linked: "Vincula una wallet Cavos válida de Stellar Testnet.",
+  invalid_tx: "No se pudo verificar una transacción válida en Stellar Testnet.",
+  wrong_destination: "El destino del pago no es la tesorería configurada.",
+  tx_already_used: "Esta transacción ya pertenece a otro aporte.",
+  already_recorded: "El aporte ya estaba registrado.",
+  record_failed: "No se pudo registrar el aporte. Reintenta con el mismo hash.",
   wrong_network: "La transacción no es de Stellar Testnet.",
   tx_failed: "La transacción falló en la red Stellar.",
   wrong_memo: "La transacción no corresponde a este grupo (memo distinto).",

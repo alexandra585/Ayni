@@ -1,6 +1,7 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { xlmToStroops } from "@/lib/money";
+import { GET, POST } from "@/app/api/stellar/contribution/route";
 
 /**
  * Pruebas de los route handlers de Stellar con Supabase y Horizon simulados:
@@ -15,8 +16,8 @@ const HASH = "da0630b33724645df3f752d2bb31f422e4726446a6e74ee9874c34fb53351886";
 const state = {
   user: { id: USER } as { id: string } | null,
   rpc: vi.fn(),
-  wallet: { stellar_address: PAYER } as { stellar_address: string } | null,
-  previous: null as { id: string } | null,
+  wallet: null as { user_id: string; stellar_address: string; provider: string; network: string } | null,
+  previous: null as { user_id: string; group_id: string } | null,
   horizon: null as null | { tx: unknown; ops: unknown[] },
 };
 
@@ -36,23 +37,22 @@ vi.mock("@/services/stellar/horizon", () => ({
   assertHorizonIsTestnet: async () => undefined,
   fetchTxAndOps: async () => state.horizon,
 }));
-vi.mock("@/services/stellar/treasury", () => ({ treasuryPublicKey: () => TREASURY, isValidStellarAddress: () => true, sendFromTreasury: vi.fn() }));
 
 const goodHorizon = () => ({
-  tx: { hash: HASH, successful: true, memo_type: "text", memo: "AYNI:aaaaaaaaaaaa4aaa8aaaaa", source_account: PAYER },
+  tx: { hash: HASH, successful: true, memo_type: "none", source_account: TREASURY },
   ops: [{ type: "payment", asset_type: "native", from: PAYER, to: TREASURY, amount: "50.0000000" }],
 });
 
 const post = async (body: unknown) => {
-  const { POST } = await import("@/app/api/stellar/contribution/route");
   const res = await POST(new Request("http://x/api/stellar/contribution", { method: "POST", body: JSON.stringify(body) }));
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
 };
 
 beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC", TREASURY);
   state.previous = null;
   state.user = { id: USER };
-  state.wallet = { stellar_address: PAYER };
+  state.wallet = { user_id: USER, stellar_address: PAYER, provider: "cavos", network: "TESTNET" };
   state.horizon = goodHorizon();
   state.rpc = vi.fn(async (fn: string) => {
     if (fn === "contribution_due") return { data: String(xlmToStroops(50)), error: null };
@@ -60,6 +60,8 @@ beforeEach(() => {
     return { data: null, error: { message: "unexpected " + fn } };
   });
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("POST /api/stellar/contribution", () => {
   it("verifica en Stellar y registra el pago (una sola vez, con clave idempotente por hash)", async () => {
@@ -70,9 +72,9 @@ describe("POST /api/stellar/contribution", () => {
   });
 
   it("reintento del MISMO hash ya registrado (p. ej. tras un corte de red) → éxito idempotente, sin volver a verificar ni registrar", async () => {
-    state.previous = { id: "c1" };
+    state.previous = { user_id: USER, group_id: GROUP };
     const r = await post({ groupId: GROUP, txHash: HASH });
-    expect(r).toMatchObject({ status: 200, json: { ok: true, duplicate: true } });
+    expect(r).toMatchObject({ status: 200, json: { ok: true, duplicate: true, code: "already_recorded" } });
     expect(state.rpc).not.toHaveBeenCalled();
   });
 
@@ -97,9 +99,8 @@ describe("POST /api/stellar/contribution", () => {
 
   it.each([
     ["monto menor", { ops: [{ ...goodHorizon().ops[0], amount: "10.0000000" }] }, "wrong_amount"],
-    ["destino distinto a la treasury", { ops: [{ ...goodHorizon().ops[0], to: PAYER }] }, "no_payment_to_treasury"],
-    ["memo de otro grupo", { tx: { ...goodHorizon().tx, memo: "AYNI:bbbbbbbbbbbb4bbb8bbbbb" } }, "wrong_memo"],
-    ["transacción fallida", { tx: { ...goodHorizon().tx, successful: false } }, "tx_failed"],
+    ["destino distinto a la treasury", { ops: [{ ...goodHorizon().ops[0], to: PAYER }] }, "wrong_destination"],
+    ["transacción fallida", { tx: { ...goodHorizon().tx, successful: false } }, "invalid_tx"],
     ["emisor distinto a mi wallet", { ops: [{ ...goodHorizon().ops[0], from: "GBSQ2CGNHOT3B7RXMBWXEYOMPY2LWFFU4IDT7ZZIOM4N5GXM5TN2V5YM" }] }, "wrong_source"],
   ])("%s → 422 y no registra", async (_name, patch, reason) => {
     state.horizon = { ...goodHorizon(), ...patch };
@@ -108,11 +109,17 @@ describe("POST /api/stellar/contribution", () => {
     expect(state.rpc.mock.calls.some((c) => c[0] === "record_contribution")).toBe(false);
   });
 
+  it("acepta un memo ajeno al grupo porque Cavos no exige memo", async () => {
+    state.horizon = { ...goodHorizon(), tx: { ...goodHorizon().tx, memo_type: "text", memo: "AYNI:bbbbbbbbbbbb4bbb8bbbbb" } };
+    expect(await post({ groupId: GROUP, txHash: HASH })).toMatchObject({ status: 200, json: { ok: true, txHash: HASH } });
+    expect(state.rpc.mock.calls.filter((c) => c[0] === "record_contribution")).toHaveLength(1);
+  });
+
   it("si la BD dice que el hash ya se usó (replay) → 409", async () => {
     state.rpc = vi.fn(async (fn: string) =>
       fn === "contribution_due" ? { data: String(xlmToStroops(50)), error: null } : { data: { ok: false, error: "hash_already_used" }, error: null });
     const r = await post({ groupId: GROUP, txHash: HASH });
-    expect(r).toMatchObject({ status: 409, json: { ok: false, error: "hash_already_used" } });
+    expect(r).toMatchObject({ status: 409, json: { ok: false, error: "tx_already_used" } });
   });
 
   it("si no hay cuota pendiente o no es miembro → 409 sin consultar Stellar", async () => {
@@ -123,7 +130,6 @@ describe("POST /api/stellar/contribution", () => {
   });
 
   it("rechaza peticiones con Origin de otro sitio (CSRF) sin consultar nada", async () => {
-    const { POST } = await import("@/app/api/stellar/contribution/route");
     const res = await POST(new Request("http://app.test/api/stellar/contribution", {
       method: "POST", headers: { origin: "https://evil.example" }, body: JSON.stringify({ groupId: GROUP, txHash: HASH }),
     }));
@@ -132,7 +138,6 @@ describe("POST /api/stellar/contribution", () => {
   });
 
   it("GET devuelve el monto exacto que decide la BD (para que el cliente pague lo correcto)", async () => {
-    const { GET } = await import("@/app/api/stellar/contribution/route");
     const res = await GET(new Request("http://x/api/stellar/contribution?groupId=" + GROUP));
     expect(await res.json()).toEqual({ ok: true, amountStroops: "500000000" });
   });

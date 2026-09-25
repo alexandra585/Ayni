@@ -9,9 +9,12 @@ import type { JuntaGroup } from "@/domain/types";
 import { r2, short, xlm } from "@/lib/format";
 import { useAyni } from "@/store/ayni";
 import { useUi } from "@/store/ui";
+import { refreshSnapshot } from "@/repositories/supabase";
 import { ProcSteps, useRail, useSteps } from "./shared";
 
-type Phase = { t: "form" } | { t: "processing" } | { t: "done"; hash: string; amount: string };
+type PaymentReceipt = { hash: string; amount: string };
+type Phase = { t: "form" } | { t: "processing" } | ({ t: "registering" } & PaymentReceipt)
+  | ({ t: "register-error"; message: string } & PaymentReceipt) | ({ t: "done" } & PaymentReceipt);
 
 /** Pagar mi cuota (fondo común): formulario → procesando → comprobante. */
 export function PayModal({ gid }: { gid: string }) {
@@ -29,6 +32,37 @@ export function PayModal({ gid }: { gid: string }) {
   const labels = rail.payLabels(xlm(due0));
   const on = useSteps(labels.length, 550, undefined, phase.t === "processing");
   const started = useRef(false);
+  const registering = useRef(false);
+
+  const registerPayment = async (payment: PaymentReceipt) => {
+    if (registering.current) return;
+    registering.current = true;
+    setPhase({ t: "registering", ...payment });
+    try {
+      const response = await fetch("/api/stellar/contribution", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ txHash: payment.hash, groupId: gid }),
+      });
+      const result = await response.json() as { ok?: boolean; message?: string };
+      if (!response.ok || !result.ok) {
+        setPhase({ t: "register-error", ...payment, message: result.message || "No se pudo registrar el aporte." });
+        return;
+      }
+    } catch {
+      setPhase({ t: "register-error", ...payment, message: "No se pudo confirmar el registro. Reintenta con el mismo hash." });
+      return;
+    } finally {
+      registering.current = false;
+    }
+    try {
+      await refreshSnapshot();
+    } catch {
+      setPhase({ t: "register-error", ...payment, message: "El aporte está registrado, pero no se pudo actualizar la información. Reintenta para recargarla." });
+      return;
+    }
+    setPhase({ t: "done", ...payment });
+  };
 
   useEffect(() => {
     if (phase.t !== "processing" || started.current) return;
@@ -54,7 +88,7 @@ export function PayModal({ gid }: { gid: string }) {
           amountStroops,
           process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC!,
         );
-        setPhase({ t: "done", hash, amount: xlm(Number(amountStroops) / 10_000_000) });
+        await registerPayment({ hash, amount: xlm(Number(amountStroops) / 10_000_000) });
         return;
       }
 
@@ -72,6 +106,19 @@ export function PayModal({ gid }: { gid: string }) {
 
   if (due0 <= 0 && phase.t === "form") return null;
 
+  if (phase.t === "registering" || phase.t === "register-error")
+    return (
+      <Sheet onClose={close}>
+        <h3 id="sh-t">{phase.t === "registering" ? "Registrando aporte" : "Registro pendiente"}</h3>
+        <p className="muted">Los XLM ya fueron enviados. Conserva este hash para completar el registro.</p>
+        <p className="caption num" style={{ overflowWrap: "anywhere" }}>{phase.hash}</p>
+        {phase.t === "register-error" ? <>
+          <p role="alert">{phase.message}</p>
+          <button className="btn btn-primary btn-block" onClick={() => void registerPayment({ hash: phase.hash, amount: phase.amount })}>Reintentar registro</button>
+        </> : <p role="status">Verificando el pago y actualizando el grupo…</p>}
+      </Sheet>
+    );
+
   if (phase.t === "processing")
     return (
       <Sheet onClose={close}>
@@ -84,8 +131,8 @@ export function PayModal({ gid }: { gid: string }) {
     return (
       <Sheet onClose={close}>
         <div style={{ textAlign: "center" }}>
-          <Badge tone="paid" icon="check" style={{ marginBottom: 12 }}>Transferencia enviada</Badge>
-          <h3 id="sh-t">Aporte transferido</h3>
+          <Badge tone="paid" icon="check" style={{ marginBottom: 12 }}>{rail.kind === "demo" ? "Transferencia enviada" : "Pago confirmado"}</Badge>
+          <h3 id="sh-t">{rail.kind === "demo" ? "Aporte transferido" : "Aporte registrado"}</h3>
           <p className="muted" style={{ margin: "8px 0 4px" }}>{phase.amount} enviados a la tesorería Testnet.</p>
           <p className="caption num">tx {short(phase.hash)}</p>
           <button className="btn btn-primary btn-block" style={{ marginTop: 20 }} id="pay-ok" onClick={close} autoFocus>Listo</button>
