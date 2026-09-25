@@ -4,9 +4,12 @@ import { Icon } from "@/components/ui/Icon";
 import { EMAIL } from "@/domain/validation";
 import { signInSupabase, signUpSupabase } from "./supabase-auth";
 
+type AuthMode = "login" | "signup";
+const INITIAL_AUTH_MODE: AuthMode = "login";
+
 /** Acceso real con Supabase Auth (correo + contraseña). Reutiliza el diseño del onboarding del prototipo. */
 export function SupabaseAuthForm() {
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [mode, setMode] = useState<AuthMode>(INITIAL_AUTH_MODE);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -36,7 +39,7 @@ export function SupabaseAuthForm() {
   return (
     <div className="panel onb">
       <p className="eyebrow">Tu cuenta Ayni</p>
-      <h1>{mode === "signin" ? "Entra a tu cuenta" : "Crea tu cuenta"}</h1>
+      <h1>{mode === "login" ? "Entra a tu cuenta" : "Crea tu cuenta"}</h1>
       <p className="muted">Modo conectado: tu cuenta y tus grupos viven en Supabase; los pagos son en Stellar Testnet (sin dinero real).</p>
       <form id="onb" noValidate onSubmit={onSubmit} style={{ display: "grid", gap: 16, marginTop: 20 }}>
         {mode === "signup" ? (
@@ -51,7 +54,7 @@ export function SupabaseAuthForm() {
         </div>
         <div className="field">
           <label htmlFor="o-pass">Contraseña</label>
-          <input id="o-pass" name="password" type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={8} />
+          <input id="o-pass" name="password" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} />
           <span className="hint">Mínimo 8 caracteres.</span>
         </div>
         {mode === "signup" ? (
@@ -70,10 +73,10 @@ export function SupabaseAuthForm() {
         {info ? <p className="infobox" role="status">{info}</p> : null}
         <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
           <Icon name="finger" />
-          {busy ? "Un momento…" : mode === "signin" ? "Entrar" : "Crear cuenta"}
+          {busy ? "Un momento…" : mode === "login" ? "Entrar" : "Crear cuenta"}
         </button>
-        <button type="button" className="btn btn-ghost btn-block" onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setErr(""); setInfo(""); }}>
-          {mode === "signin" ? "No tengo cuenta: crear una" : "Ya tengo cuenta: entrar"}
+        <button type="button" className="btn btn-ghost btn-block" onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); setInfo(""); }}>
+          {mode === "login" ? "No tengo cuenta: crear una" : "Ya tengo cuenta: entrar"}
         </button>
       </form>
     </div>

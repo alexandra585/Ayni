@@ -1,4 +1,6 @@
 "use client";
+import { useCavos } from "@cavos/kit/react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { APP_MODE } from "@/config/app";
 import { connectedWallets, WALLETS } from "@/domain/actions";
@@ -11,6 +13,9 @@ import { useUi } from "@/store/ui";
 
 /** /wallet — Billetera. */
 export function WalletScreen() {
+  const { isAuthenticated, isLoading: cavosLoading, wallet, walletStatus, authError } = useCavos();
+  const [stroops, setStroops] = useState<bigint | null>(null);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
   const s = useAyni((x) => x.s);
   const { disconnectWallet } = useAyni.getState();
   const open = useUi((u) => u.open);
@@ -18,6 +23,23 @@ export function WalletScreen() {
   const conn = w.conn || {};
   /** modo supabase: saldo y pagos reales en Stellar Testnet (solo Freighter). */
   const live = APP_MODE === "supabase";
+
+  useEffect(() => {
+    let alive = true;
+    setStroops(null);
+    setBalanceError(null);
+    if (wallet?.chain !== "stellar") return () => { alive = false; };
+
+    void wallet.balance().then((value) => {
+      if (alive) setStroops(value);
+    }).catch(() => {
+      if (alive) setBalanceError("No se pudo consultar el saldo XLM.");
+    });
+
+    return () => { alive = false; };
+  }, [wallet]);
+
+  const cavosBalance = stroops == null ? null : Number(stroops) / 10_000_000;
 
   const mine = myGroupIds(s);
   const locked = mine.reduce((a, id) => {
@@ -36,49 +58,38 @@ export function WalletScreen() {
       <div className="main">
         <section className="wal-hero" aria-label="Saldo disponible">
           <span className="lbl">Saldo disponible</span>
-          <span className="tot">{xlm(w.bal)}</span>
-          <span style={{ fontSize: 14, opacity: 0.85 }}>≈ S/ {fmt(w.bal * REF)} · tipo de cambio referencial</span>
-          {w.address ? (
-            <button className="addr" id="copy-addr" aria-label="Copiar dirección de mi billetera" onClick={() => copyText(w.address, "Dirección copiada")}>
-              <Icon name="copy" />{short(w.address)}
+          <span className="tot">{cavosBalance == null ? "— XLM" : xlm(cavosBalance)}</span>
+          <span style={{ fontSize: 14, opacity: 0.85 }}>≈ S/ {fmt((cavosBalance ?? 0) * REF)} · tipo de cambio referencial</span>
+          {wallet?.chain === "stellar" ? (
+            <button className="addr" id="copy-addr" aria-label="Copiar dirección de mi billetera" onClick={() => copyText(wallet.address, "Dirección copiada")}>
+              <Icon name="copy" />{short(wallet.address)}
             </button>
           ) : (
-            <span style={{ fontSize: 14, opacity: 0.85 }}>Aún no conectaste una wallet de Stellar Testnet.</span>
+            <span style={{ fontSize: 14, opacity: 0.85 }}>
+              {cavosLoading || !isAuthenticated ? "Conectando wallet Stellar Testnet…" : "Wallet Stellar Testnet no conectada."}
+            </span>
           )}
-          {live ? (
-            <div className="row">
-              {w.address ? (
-                <a className="btn btn-on" id="friendbot" href={"https://friendbot.stellar.org/?addr=" + encodeURIComponent(w.address)} target="_blank" rel="noreferrer">
-                  <Icon name="plus" />Fondear con Friendbot (Testnet)
-                </a>
-              ) : (
-                <button className="btn btn-on" id="connect-freighter" onClick={() => open({ t: "connect", k: "freighter" })}><Icon name="wallet" />Conectar Freighter</button>
-              )}
-              {w.address ? <button className="btn btn-line" id="receive" onClick={() => open({ t: "receive" })}><Icon name="inn" />Mi dirección</button> : null}
-            </div>
-          ) : (
-            <div className="row">
-              <button className="btn btn-on" id="topup" onClick={() => open({ t: "topup" })}><Icon name="plus" />Recargar desde wallet Stellar</button>
-              <button className="btn btn-line" id="receive" onClick={() => open({ t: "receive" })}><Icon name="inn" />Mi dirección</button>
-            </div>
-          )}
+          <span style={{ fontSize: 14, opacity: 0.85 }}>Stellar Testnet · status: {wallet?.chain === "stellar" ? wallet.status : "no conectada"}</span>
+          {balanceError || authError ? <p className="err" role="alert">{balanceError ?? authError}</p> : null}
         </section>
 
         <div className="panel">
           <div className="panel-head"><h2>Wallets conectadas</h2><span className="caption">{connectedWallets(s).length} conectada{connectedWallets(s).length === 1 ? "" : "s"}</span></div>
           <p className="muted" style={{ fontSize: 14 }}>Tu saldo solo se recarga desde una wallet Stellar conectada.</p>
           <ul className="assets" style={{ marginTop: 8 }}>
-            {(live ? WALLETS.filter((x) => x.k === "freighter") : WALLETS).map((x) => {
+            {(live ? WALLETS.filter((x) => x.k === "cavos") : WALLETS).map((x) => {
               const on = conn[x.k];
               return (
                 <li className="asset" key={x.k}>
                   <span className={"tok " + (x.kind === "emb" ? "tok-usdc" : "tok-xlm")} aria-hidden="true">{x.t[0]}</span>
                   <div>
-                    <b>{x.t}{x.k === "freighter" ? <> <span className="gtag tes" style={{ verticalAlign: 2 }}>Recomendada</span></> : null}</b>
-                    <small>{x.type} · {on ? "conectada · " + short(on.addr) : x.d}</small>
+                    <b>{x.t}</b>
+                    <small>{x.type} · {wallet?.chain === "stellar" ? "conectada · " + short(wallet.address) : "no conectada"}</small>
                   </div>
                   <div>
-                    {on ? (
+                    {live ? (
+                      <span className="caption">{wallet?.chain === "stellar" ? wallet.status : "—"}</span>
+                    ) : on ? (
                       <button className="btn btn-ghost btn-sm" data-disc={x.k} onClick={() => disconnectWallet(x.k)}>Desconectar</button>
                     ) : (
                       <button className="btn btn-secondary btn-sm" data-conn={x.k} onClick={() => open({ t: "connect", k: x.k })}>Conectar</button>
@@ -105,7 +116,7 @@ export function WalletScreen() {
                 <b>Stellar Lumens (XLM)</b>
                 <small>Ayni opera solo con XLM: cuotas, aportes, pozos y devoluciones. Las comisiones de red las cubre Ayni.</small>
               </div>
-              <div className="v">{xlm(w.bal)}</div>
+              <div className="v">{cavosBalance == null ? "— XLM" : xlm(cavosBalance)}</div>
             </li>
           </ul>
         </div>
@@ -123,7 +134,7 @@ export function WalletScreen() {
         </div>
         <p className="fine">
           {live
-            ? "MVP TESTNET ONLY: el saldo es el de tu wallet en Stellar Testnet (XLM de prueba, sin valor real). Los pagos los firmas tú con Freighter y el servidor los verifica antes de registrarlos."
+            ? "MVP TESTNET ONLY: aquí solo se muestra tu wallet Cavos en Stellar Testnet (XLM de prueba, sin valor real). Los pagos aún no están implementados."
             : "Billetera en la red Stellar protegida con passkey. Solo se recarga desde Freighter, Cavos o Privy. Saldos y recargas son simulados en esta demo."}
         </p>
       </div>
