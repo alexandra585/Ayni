@@ -1,0 +1,26 @@
+# Supabase CLI (supabase start). Solo desarrollo local / demo de hackathon.
+project_id = "ayni"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+
+[db]
+port = 54322
+major_version = 15
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/**"]
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+# En local no exigimos confirmar el correo para poder probar rápido. En producción: true.
+enable_confirmations = false
