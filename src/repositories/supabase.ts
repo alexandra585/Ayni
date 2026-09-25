@@ -73,6 +73,32 @@ export async function currentUserId(): Promise<string> {
   return data.user.id;
 }
 
+export async function linkCavosWallet(userId: string, address: string): Promise<"created" | "already-linked" | "conflict"> {
+  const supa = getSupabase();
+  const findWallet = async () => {
+    const { data, error } = await supa.from("wallet_accounts").select("stellar_address").eq("user_id", userId).maybeSingle();
+    if (error) throw new Error(error.message);
+    return data?.stellar_address ?? null;
+  };
+
+  const existingAddress = await findWallet();
+  if (existingAddress) return existingAddress === address ? "already-linked" : "conflict";
+
+  const { error } = await supa.from("wallet_accounts").insert({
+    user_id: userId,
+    stellar_address: address,
+    network: "TESTNET",
+    provider: "cavos",
+  });
+  if (!error) return "created";
+  if (error.code !== "23505") throw new Error(error.message);
+
+  const concurrentAddress = await findWallet();
+  if (concurrentAddress === address) return "already-linked";
+  if (concurrentAddress) return "conflict";
+  throw new Error(error.message);
+}
+
 /* ───────────────────────── unirse ───────────────────────── */
 const JOIN_ERRORS: Record<string, string> = {
   code_length: "El código debe tener 9 caracteres, por ejemplo AYNI-5B32.",

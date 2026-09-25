@@ -1,45 +1,59 @@
 "use client";
-import { useCavos } from "@cavos/kit/react";
-import { useEffect, useState } from "react";
+import { useCavosAuth } from "@cavos/kit/react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { APP_MODE } from "@/config/app";
 import { connectedWallets, WALLETS } from "@/domain/actions";
 import { isP, mstatus, myGroupIds } from "@/domain/model";
 import type { WalletMove } from "@/domain/types";
 import { copyText } from "@/lib/clipboard";
-import { fdt, fmt, REF, short, xlm } from "@/lib/format";
+import { fdt, short, xlm } from "@/lib/format";
+import { currentUserId, linkCavosWallet } from "@/repositories/supabase";
 import { useAyni } from "@/store/ayni";
 import { useUi } from "@/store/ui";
 
 /** /wallet — Billetera. */
 export function WalletScreen() {
-  const { isAuthenticated, isLoading: cavosLoading, wallet, walletStatus, authError } = useCavos();
-  const [stroops, setStroops] = useState<bigint | null>(null);
-  const [balanceError, setBalanceError] = useState<string | null>(null);
+  const { isAuthenticated, address, walletStatus, openModal } = useCavosAuth();
+  const linkAttempted = useRef<string | null>(null);
+  const [walletLinkError, setWalletLinkError] = useState<string | null>(null);
   const s = useAyni((x) => x.s);
   const { disconnectWallet } = useAyni.getState();
   const open = useUi((u) => u.open);
   const w = s.wallet!;
   const conn = w.conn || {};
-  /** modo supabase: saldo y pagos reales en Stellar Testnet (solo Freighter). */
+  /** Modo live: solo se muestra el estado de Cavos. */
   const live = APP_MODE === "supabase";
+  const cavosStatus = walletStatus.needsDeviceApproval
+    ? "Requiere aprobación del dispositivo"
+    : walletStatus.isReady
+      ? "Lista"
+      : walletStatus.isUndeployed
+        ? "Sin desplegar"
+        : "Conectada";
 
   useEffect(() => {
-    let alive = true;
-    setStroops(null);
-    setBalanceError(null);
-    if (wallet?.chain !== "stellar") return () => { alive = false; };
+    if (!live || !isAuthenticated || !address?.startsWith("G")) return;
 
-    void wallet.balance().then((value) => {
-      if (alive) setStroops(value);
+    let active = true;
+    void currentUserId().then(async (userId) => {
+      if (!active) return;
+      const attemptKey = `${userId}:${address}`;
+      if (linkAttempted.current === attemptKey) return;
+      linkAttempted.current = attemptKey;
+
+      const result = await linkCavosWallet(userId, address);
+      if (active && result === "conflict") {
+        setWalletLinkError("Esta cuenta Ayni ya tiene otra wallet vinculada.");
+      }
     }).catch(() => {
-      if (alive) setBalanceError("No se pudo consultar el saldo XLM.");
+      if (active) setWalletLinkError("No se pudo vincular la wallet Cavos con tu cuenta Ayni.");
     });
 
-    return () => { alive = false; };
-  }, [wallet]);
-
-  const cavosBalance = stroops == null ? null : Number(stroops) / 10_000_000;
+    return () => {
+      active = false;
+    };
+  }, [address, isAuthenticated, live]);
 
   const mine = myGroupIds(s);
   const locked = mine.reduce((a, id) => {
@@ -56,26 +70,15 @@ export function WalletScreen() {
   return (
     <div className="wal">
       <div className="main">
-        <section className="wal-hero" aria-label="Saldo disponible">
-          <span className="lbl">Saldo disponible</span>
-          <span className="tot">{cavosBalance == null ? "— XLM" : xlm(cavosBalance)}</span>
-          <span style={{ fontSize: 14, opacity: 0.85 }}>≈ S/ {fmt((cavosBalance ?? 0) * REF)} · tipo de cambio referencial</span>
-          {wallet?.chain === "stellar" ? (
-            <button className="addr" id="copy-addr" aria-label="Copiar dirección de mi billetera" onClick={() => copyText(wallet.address, "Dirección copiada")}>
-              <Icon name="copy" />{short(wallet.address)}
-            </button>
-          ) : (
-            <span style={{ fontSize: 14, opacity: 0.85 }}>
-              {cavosLoading || !isAuthenticated ? "Conectando wallet Stellar Testnet…" : "Wallet Stellar Testnet no conectada."}
-            </span>
-          )}
-          <span style={{ fontSize: 14, opacity: 0.85 }}>Stellar Testnet · status: {wallet?.chain === "stellar" ? wallet.status : "no conectada"}</span>
-          {balanceError || authError ? <p className="err" role="alert">{balanceError ?? authError}</p> : null}
+        <section className="wal-hero" aria-label="Estado de wallet Cavos">
+          <span className="lbl">Estado de wallet Cavos</span>
+          <span className="tot">{isAuthenticated ? cavosStatus : "No conectada"}</span>
+          <span style={{ fontSize: 14, opacity: 0.85 }}>Stellar Testnet</span>
         </section>
 
         <div className="panel">
           <div className="panel-head"><h2>Wallets conectadas</h2><span className="caption">{connectedWallets(s).length} conectada{connectedWallets(s).length === 1 ? "" : "s"}</span></div>
-          <p className="muted" style={{ fontSize: 14 }}>Tu saldo solo se recarga desde una wallet Stellar conectada.</p>
+          <p className="muted" style={{ fontSize: 14 }}>Estado de conexión de tu wallet Cavos.</p>
           <ul className="assets" style={{ marginTop: 8 }}>
             {(live ? WALLETS.filter((x) => x.k === "cavos") : WALLETS).map((x) => {
               const on = conn[x.k];
@@ -84,11 +87,17 @@ export function WalletScreen() {
                   <span className={"tok " + (x.kind === "emb" ? "tok-usdc" : "tok-xlm")} aria-hidden="true">{x.t[0]}</span>
                   <div>
                     <b>{x.t}</b>
-                    <small>{x.type} · {wallet?.chain === "stellar" ? "conectada · " + short(wallet.address) : "no conectada"}</small>
+                    <small>{x.type} · {isAuthenticated ? "conectada" : "no conectada"}</small>
+                    {live && address ? <small>Dirección Stellar: {address}</small> : null}
+                    {live && walletLinkError ? <small className="err" role="alert">{walletLinkError}</small> : null}
                   </div>
                   <div>
                     {live ? (
-                      <span className="caption">{wallet?.chain === "stellar" ? wallet.status : "—"}</span>
+                      isAuthenticated ? (
+                        <span className="caption">{cavosStatus}</span>
+                      ) : (
+                        <button className="btn btn-secondary btn-sm" onClick={openModal}>Activar wallet</button>
+                      )
                     ) : on ? (
                       <button className="btn btn-ghost btn-sm" data-disc={x.k} onClick={() => disconnectWallet(x.k)}>Desconectar</button>
                     ) : (
@@ -116,7 +125,7 @@ export function WalletScreen() {
                 <b>Stellar Lumens (XLM)</b>
                 <small>Ayni opera solo con XLM: cuotas, aportes, pozos y devoluciones. Las comisiones de red las cubre Ayni.</small>
               </div>
-              <div className="v">{cavosBalance == null ? "— XLM" : xlm(cavosBalance)}</div>
+              <div className="v">{isAuthenticated ? cavosStatus : "—"}</div>
             </li>
           </ul>
         </div>
