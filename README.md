@@ -209,7 +209,7 @@ Como prueba fehaciente de la integración operativa con la red Stellar, se ejecu
 - **Alexandra** — *Project Manager & Data/Backend*
 - **Erick** — *Frontend & UX/UI*
 - **Edson** — *Frontend & UX/UI*
-- **Leyser** — *Infraestructura Web*
+- **Mario Leyser Vilca Zamora** — *IA Engine*
 
 ---
 
