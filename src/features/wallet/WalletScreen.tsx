@@ -20,6 +20,13 @@ export function WalletScreen() {
   const [stroops, setStroops] = useState<bigint | null>(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
+  const [funding, setFunding] = useState(false);
+  const fundingLock = useRef(false);
+  const [fundingMessage, setFundingMessage] = useState<string | null>(null);
+  const [fundingError, setFundingError] = useState<string | null>(null);
+  const balanceGeneration = useRef(0);
+  const testnet = process.env.NEXT_PUBLIC_STELLAR_NETWORK === "testnet";
+  const canFund = testnet && !!wallet && !!address?.startsWith("G");
   const s = useAyni((x) => x.s);
   const { disconnectWallet } = useAyni.getState();
   const open = useUi((u) => u.open);
@@ -59,6 +66,9 @@ export function WalletScreen() {
   }, [address, isAuthenticated, live]);
 
   useEffect(() => {
+    const generation = ++balanceGeneration.current;
+    setFundingMessage(null);
+    setFundingError(null);
     if (wallet?.chain !== "stellar") {
       setStroops(null);
       setBalanceError(null);
@@ -80,8 +90,53 @@ export function WalletScreen() {
 
     return () => {
       active = false;
+      if (balanceGeneration.current === generation) balanceGeneration.current++;
     };
   }, [address, wallet]);
+
+  async function refreshBalance() {
+    if (wallet?.chain !== "stellar") return;
+    const generation = balanceGeneration.current;
+    setBalanceLoading(true);
+    setBalanceError(null);
+    try {
+      const value = await wallet.balance();
+      if (generation === balanceGeneration.current) setStroops(value);
+    } catch {
+      if (generation === balanceGeneration.current) setBalanceError("No se pudo leer el saldo XLM.");
+    } finally {
+      if (generation === balanceGeneration.current) setBalanceLoading(false);
+    }
+  }
+
+  async function fundWallet() {
+    if (!canFund || fundingLock.current || walletLinkError) return;
+    fundingLock.current = true;
+    setFunding(true);
+    setFundingMessage(null);
+    setFundingError(null);
+    const generation = balanceGeneration.current;
+    try {
+      if (stroops !== null && stroops > 0n) {
+        setFundingMessage("La wallet ya está activa en Testnet.");
+        await refreshBalance();
+        return;
+      }
+      const response = await fetch("/api/stellar/friendbot", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.message || "No se pudo fondear con Friendbot.");
+      if (generation !== balanceGeneration.current) return;
+      setFundingMessage(result.message);
+      await refreshBalance();
+    } catch (error) {
+      if (generation === balanceGeneration.current) {
+        setFundingError(error instanceof Error ? error.message : "No se pudo fondear con Friendbot.");
+      }
+    } finally {
+      fundingLock.current = false;
+      setFunding(false);
+    }
+  }
 
   const mine = myGroupIds(s);
   const locked = mine.reduce((a, id) => {
@@ -101,7 +156,7 @@ export function WalletScreen() {
         <section className="wal-hero" aria-label="Estado de wallet Cavos">
           <span className="lbl">Estado de wallet Cavos</span>
           <span className="tot">{isAuthenticated ? cavosStatus : "No conectada"}</span>
-          <span style={{ fontSize: 14, opacity: 0.85 }}>Stellar Testnet</span>
+          <span style={{ fontSize: 14, opacity: 0.85 }}>{testnet ? "Stellar Testnet · XLM de prueba sin valor real" : "Stellar"}</span>
         </section>
 
         <div className="panel">
@@ -146,6 +201,16 @@ export function WalletScreen() {
 
         <div className="panel">
           <div className="panel-head"><h2>Moneda</h2></div>
+          {canFund || (isAuthenticated && wallet?.chain === "stellar") ? (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+              {canFund ? <button className="btn btn-secondary btn-sm" disabled={funding || !!walletLinkError} onClick={fundWallet}>
+                {funding ? "Fondeando..." : "+ Fondear 10,000 XLM de prueba"}
+              </button> : null}
+              <button className="btn btn-ghost btn-sm" disabled={balanceLoading || funding} onClick={refreshBalance}>Refrescar saldo</button>
+            </div>
+          ) : null}
+          {fundingMessage ? <p className="muted" role="status">{fundingMessage}</p> : null}
+          {fundingError ? <p className="err" role="alert">{fundingError}</p> : null}
           <ul className="assets">
             <li className="asset">
               <span className="tok tok-xlm" aria-hidden="true">✦</span>
