@@ -17,3 +17,26 @@ Los usuarios se unen a "grupos silenciosos" mediante un enlace de invitación. T
 * **Erick** - Frontend & UX/UI.
 * **Edson** - Frontend & UX/UI.
 * **Leyser** - Infraestructura Web.
+
+
+## Evidencia on-chain (Testnet)
+
+Como evidencia de la integración con la red Stellar, se realizó una
+transacción en **Stellar Testnet** con estado **Successful**.
+
+La operación consistió en el envío de **1 XLM** desde la cuenta
+`GCYDGW...GXG4JA` hacia `GBYZ...3NHK`.
+
+**Datos de la transacción:**
+
+- **Red:** Stellar Testnet
+- **Estado:** Successful
+- **Transaction Hash:** `6fcfe0961a0f06528437200618cc53e00add122a3d6e0a47cec189752f134c38`
+- **Ledger:** `4869620`
+- **Monto:** 1 XLM
+- **Fee:** 0.00002 XLM
+- **Transaction Size:** 344 bytes
+
+La transacción cuenta además con una **firma registrada en la red**,
+permitiendo verificar que la operación fue procesada correctamente
+en Stellar Testnet.
