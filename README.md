@@ -206,9 +206,9 @@ Como prueba fehaciente de la integración operativa con la red Stellar, se ejecu
 
 ## 👥 Equipo del Proyecto
 
-- **Alexandra** — *Project Manager & Data/Backend*
-- **Erick** — *Frontend & UX/UI*
-- **Edson** — *Frontend & UX/UI*
+- **Alexandra del Carmen Magallanes Saldaña** — *Project Manager & Data/Backend*
+- **Erick Miguel Trinidad Yanac** — *Frontend & UX/UI*
+- **Alan Edson Cahuaya Chino** — *Frontend & UX/UI*
 - **Mario Leyser Vilca Zamora** — *IA Engine*
 
 ---
