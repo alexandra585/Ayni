@@ -43,7 +43,7 @@ export async function POST(req: Request) {
     if (!rows.some((m) => m.user_id === toUserId)) return json({ ok: false, error: "not_member", message: "El destino no pertenece al grupo." }, 422);
     const total = rows.reduce((a, m) => a + BigInt(String(m.paid_stroops)), 0n);
     if (total <= 0n) return json({ ok: false, error: "nothing_to_send" }, 409);
-    const dest = await svc.from("wallet_accounts").select("stellar_address").eq("user_id", toUserId).maybeSingle();
+    const dest = await svc.from("wallet_accounts").select("stellar_address").eq("user_id", toUserId).eq("provider", "cavos").maybeSingle();
     const addr = dest.data?.stellar_address;
     if (!addr || !isValidStellarAddress(addr))
       return json({ ok: false, error: "recipient_wallet_missing", message: "El destino aún no conectó una wallet de Stellar Testnet." }, 422);

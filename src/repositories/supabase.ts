@@ -47,7 +47,7 @@ export async function loadSnapshot(): Promise<AyniState | null> {
     supa.from("group_members").select("*").then((r) => must<MemberRow[]>(r, "members")),
     supa.from("ledger_entries").select("*").order("created_at", { ascending: false }).limit(1000).then((r) => must<LedgerRow[]>(r, "ledger")),
     supa.from("notifications").select("*").order("created_at", { ascending: false }).limit(200).then((r) => must<NotificationRow[]>(r, "notifications")),
-    supa.from("wallet_accounts").select("stellar_address, provider, created_at").maybeSingle().then((r) => (r.data as WalletRow | null)),
+    supa.from("wallet_accounts").select("stellar_address, provider, created_at").eq("user_id", uid).then((r) => must<WalletRow[]>(r, "wallets")),
     supa.rpc("list_public_panderos").then((r) => must<PublicPanderoRow[]>(r, "foro")),
     supa.from("pandero_turns").select("*").then((r) => must<TurnRow[]>(r, "turnos")),
     supa.from("pandero_rounds").select("group_id, round, paid_out").then((r) => must<RoundRow[]>(r, "rondas")),
@@ -57,8 +57,11 @@ export async function loadSnapshot(): Promise<AyniState | null> {
   const profilesById: Record<string, { name: string; user_code: string }> = {};
   for (const p of (profs.data ?? []) as { id: string; name: string; user_code: string }[]) profilesById[p.id] = p;
 
-  const balance = wallet ? await fetchXlmBalance(wallet.stellar_address).catch(() => 0) : 0;
-  return buildSnapshot({ uid, profile, profilesById, groups, members, ledger, notifications, publicPanderos: panderos, wallet, testnetBalance: balance, turns, rounds });
+  const primaryWallet = wallet.find((w) => w.provider === "cavos") ?? wallet[0] ?? null;
+  const balance = primaryWallet ? await fetchXlmBalance(primaryWallet.stellar_address).catch(() => 0) : 0;
+  const snapshot = buildSnapshot({ uid, profile, profilesById, groups, members, ledger, notifications, publicPanderos: panderos, wallet: primaryWallet, testnetBalance: balance, turns, rounds });
+  snapshot.wallet!.conn = Object.fromEntries(wallet.map((w) => [w.provider, { addr: w.stellar_address, at: w.created_at }]));
+  return snapshot;
 }
 
 export async function refreshSnapshot(): Promise<void> {
@@ -76,7 +79,7 @@ export async function currentUserId(): Promise<string> {
 export async function linkCavosWallet(userId: string, address: string): Promise<"created" | "already-linked" | "conflict"> {
   const supa = getSupabase();
   const findWallet = async () => {
-    const { data, error } = await supa.from("wallet_accounts").select("stellar_address").eq("user_id", userId).maybeSingle();
+    const { data, error } = await supa.from("wallet_accounts").select("stellar_address").eq("user_id", userId).eq("provider", "cavos").maybeSingle();
     if (error) throw new Error(error.message);
     return data?.stellar_address ?? null;
   };
@@ -236,7 +239,7 @@ export async function updateProfileRemote(input: { name: string; email: string; 
 
 export async function disconnectWalletRemote(): Promise<void> {
   const uid = await currentUserId();
-  const { error } = await getSupabase().from("wallet_accounts").delete().eq("user_id", uid);
+  const { error } = await getSupabase().from("wallet_accounts").delete().eq("user_id", uid).eq("provider", "freighter");
   if (error) throw new Error(error.message);
   await refreshSnapshot();
   toast("Freighter desconectada");

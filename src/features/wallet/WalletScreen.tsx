@@ -8,7 +8,8 @@ import { isP, mstatus, myGroupIds } from "@/domain/model";
 import type { WalletMove } from "@/domain/types";
 import { copyText } from "@/lib/clipboard";
 import { fdt, short, xlm } from "@/lib/format";
-import { currentUserId, linkCavosWallet } from "@/repositories/supabase";
+import { currentUserId, disconnectWalletRemote, linkCavosWallet, refreshSnapshot } from "@/repositories/supabase";
+import { connectFreighter, fetchFreighterBalance } from "@/services/stellar/freighter";
 import { useAyni } from "@/store/ayni";
 import { useUi } from "@/store/ui";
 
@@ -32,8 +33,48 @@ export function WalletScreen() {
   const open = useUi((u) => u.open);
   const w = s.wallet!;
   const conn = w.conn || {};
+  const freighterAddress = conn.freighter?.addr;
+  const [freighterBalance, setFreighterBalance] = useState<number | null>(null);
+  const [freighterBusy, setFreighterBusy] = useState(false);
+  const freighterLock = useRef(false);
+  const [freighterError, setFreighterError] = useState<string | null>(null);
   /** Modo live: solo se muestra el estado de Cavos. */
   const live = APP_MODE === "supabase";
+  useEffect(() => {
+    let active = true;
+    setFreighterBalance(null);
+    setFreighterError(null);
+    if (live && testnet && freighterAddress) {
+      void fetchFreighterBalance(freighterAddress).then((balance) => {
+        if (active) setFreighterBalance(balance);
+      }).catch((error: unknown) => {
+        if (active) setFreighterError(error instanceof Error ? error.message : "No se pudo leer el saldo de Freighter.");
+      });
+    }
+    return () => { active = false; };
+  }, [freighterAddress, live, testnet]);
+
+  async function freighterAction(action: "connect" | "disconnect" | "balance") {
+    if (freighterLock.current) return;
+    freighterLock.current = true;
+    setFreighterBusy(true);
+    setFreighterError(null);
+    try {
+      if (action === "connect") {
+        await connectFreighter();
+        await refreshSnapshot();
+      } else if (action === "disconnect") {
+        await disconnectWalletRemote();
+      } else if (freighterAddress) {
+        setFreighterBalance(await fetchFreighterBalance(freighterAddress));
+      }
+    } catch (error) {
+      setFreighterError(error instanceof Error ? error.message : "No se pudo completar la acción de Freighter.");
+    } finally {
+      freighterLock.current = false;
+      setFreighterBusy(false);
+    }
+  }
   const cavosStatus = walletStatus.needsDeviceApproval
     ? "Requiere aprobación del dispositivo"
     : walletStatus.isReady
@@ -170,7 +211,7 @@ export function WalletScreen() {
                   <span className={"tok " + (x.kind === "emb" ? "tok-usdc" : "tok-xlm")} aria-hidden="true">{x.t[0]}</span>
                   <div>
                     <b>{x.t}</b>
-                    <small>{x.type} · {isAuthenticated ? "conectada" : "no conectada"}</small>
+                    <small>{live ? "Wallet embebida" : x.type} · {isAuthenticated ? "conectada" : "no conectada"}</small>
                     {live && address ? <small>Dirección Stellar: {address}</small> : null}
                     {live && walletLinkError ? <small className="err" role="alert">{walletLinkError}</small> : null}
                   </div>
@@ -190,6 +231,26 @@ export function WalletScreen() {
                 </li>
               );
             })}
+            {live ? <li className="asset">
+              <span className="tok tok-xlm" aria-hidden="true">F</span>
+              <div>
+                <b>Freighter</b>
+                <small>Extensión · {freighterAddress ? "conectada" : "no conectada"}</small>
+                {freighterAddress ? <>
+                  <small style={{ overflowWrap: "anywhere" }}>Dirección Stellar: {freighterAddress}</small>
+                  <small>Saldo Testnet: {freighterBalance === null ? "— XLM" : xlm(freighterBalance)}</small>
+                </> : null}
+                {freighterError ? <small className="err" role="alert">{freighterError}</small> : null}
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {freighterAddress ? <>
+                  <button className="btn btn-ghost btn-sm" disabled={freighterBusy || !testnet} onClick={() => void freighterAction("balance")}>Refrescar saldo</button>
+                  <button className="btn btn-ghost btn-sm" disabled={freighterBusy} onClick={() => void freighterAction("disconnect")}>Desconectar</button>
+                </> : <button className="btn btn-secondary btn-sm" disabled={freighterBusy || !testnet} onClick={() => void freighterAction("connect")}>
+                  {freighterBusy ? "Conectando..." : "Conectar Freighter"}
+                </button>}
+              </div>
+            </li> : null}
           </ul>
         </div>
 

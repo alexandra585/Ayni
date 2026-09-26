@@ -244,6 +244,20 @@ textarea{min-height:140px;resize:vertical;line-height:22px}
 .scrim{position:fixed;inset:0;background:var(--scrim);z-index:50;display:grid;place-items:center;padding:16px}
 .sheet{background:var(--surface-raised);border-radius:var(--radius-lg);box-shadow:var(--shadow-card);width:100%;max-width:440px;padding:24px;max-height:calc(100% - 32px);overflow:auto}
 .sheet h3{font-size:22px;line-height:28px}
+.pay-wallet-selector{min-width:0;margin:12px 0 0;padding:0;border:0}
+.pay-wallet-selector legend{padding:0;margin-bottom:8px;color:var(--ink-muted);font:500 13px/18px var(--font-sans)}
+.pay-wallet-options{display:grid;gap:8px}
+.pay-wallet-option{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);cursor:pointer;transition:border-color .15s ease,background-color .15s ease}
+.pay-wallet-option:hover{border-color:var(--line-strong);background:var(--surface-raised)}
+.pay-wallet-option:has(input:checked){border-color:var(--quinua);background:var(--quinua-soft)}
+.pay-wallet-option:has(input:focus-visible){outline:2px solid var(--focus);outline-offset:3px}
+.pay-wallet-copy{flex:1;min-width:0}
+.pay-wallet-copy b{display:block;color:var(--ink);font:600 14px/20px var(--font-sans)}
+.pay-wallet-copy small{display:block;color:var(--ink-muted);font:400 12px/18px var(--font-sans)}
+.pay-wallet-selected{visibility:hidden;color:var(--quinua-ink);font:600 11px/16px var(--font-sans)}
+.pay-wallet-option:has(input:checked) .pay-wallet-selected{visibility:visible}
+.pay-wallet-option input[type="radio"]{appearance:auto;flex:0 0 16px;width:16px;height:16px;min-height:0;margin:0;padding:0;accent-color:var(--quinua);cursor:pointer}
+@media (prefers-reduced-motion:reduce){.pay-wallet-option{transition:none}}
 .opt{display:flex;align-items:center;gap:12px;width:100%;min-height:60px;padding:12px;margin-top:8px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface-raised);color:var(--ink);text-align:left;cursor:pointer;font:inherit}
 .opt:hover{background:var(--surface-sunken)}
 .opt.rec{border:2px solid var(--quinua);padding:11px}

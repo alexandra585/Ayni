@@ -64,6 +64,44 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("POST /api/stellar/contribution", () => {
+  it("acepta Freighter vinculado al usuario en Testnet", async () => {
+    state.wallet!.provider = "freighter";
+    expect(await post({ groupId: GROUP, txHash: HASH, provider: "freighter" }))
+      .toMatchObject({ status: 200, json: { ok: true, txHash: HASH } });
+  });
+
+  it("rechaza un proveedor que no corresponde a la wallet vinculada", async () => {
+    expect(await post({ groupId: GROUP, txHash: HASH, provider: "freighter" }))
+      .toMatchObject({ status: 409, json: { error: "wallet_not_linked" } });
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rechaza Freighter fuera de Testnet", async () => {
+    state.wallet!.provider = "freighter";
+    state.wallet!.network = "PUBLIC";
+    expect((await post({ groupId: GROUP, txHash: HASH, provider: "freighter" })).status).toBe(409);
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+
+  it("rechaza una dirección enviada por el cliente y proveedores no permitidos", async () => {
+    expect((await post({ groupId: GROUP, txHash: HASH, walletAddress: PAYER })).status).toBe(400);
+    expect((await post({ groupId: GROUP, txHash: HASH, provider: "privy" })).status).toBe(400);
+  });
+
+  it("valida el emisor real del pago Freighter", async () => {
+    state.wallet!.provider = "freighter";
+    state.horizon!.ops = [{ ...goodHorizon().ops[0], from: TREASURY }];
+    expect(await post({ groupId: GROUP, txHash: HASH, provider: "freighter" }))
+      .toMatchObject({ status: 422, json: { error: "wrong_source" } });
+  });
+
+  it("reintenta el registro Freighter con el mismo hash de forma idempotente", async () => {
+    state.previous = { user_id: USER, group_id: GROUP };
+    expect(await post({ groupId: GROUP, txHash: HASH, provider: "freighter" }))
+      .toMatchObject({ status: 200, json: { ok: true, duplicate: true } });
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+
   it("verifica en Stellar y registra el pago (una sola vez, con clave idempotente por hash)", async () => {
     const r = await post({ groupId: GROUP, txHash: HASH });
     expect(r).toMatchObject({ status: 200, json: { ok: true, txHash: HASH } });

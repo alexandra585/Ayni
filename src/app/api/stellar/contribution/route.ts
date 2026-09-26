@@ -9,7 +9,7 @@ import { VERIFY_MESSAGES, verifyPayment } from "@/services/stellar/verify";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const Body = z.object({ groupId: z.string().uuid(), txHash: z.string().regex(/^[0-9a-f]{64}$/, "hash inválido") }).strict();
+const Body = z.object({ groupId: z.string().uuid(), txHash: z.string().regex(/^[0-9a-f]{64}$/, "hash inválido"), provider: z.enum(["cavos", "freighter"]).default("cavos") }).strict();
 
 const failure = (error: string, status = 500) => json({ ok: false, error, message: VERIFY_MESSAGES[error] ?? VERIFY_MESSAGES.record_failed }, status);
 
@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   if (!isSameOrigin(req)) return json({ ok: false, error: "forbidden_origin" }, 403);
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ ok: false, error: "bad_request" }, 400);
-  const { groupId, txHash } = parsed.data;
+  const { groupId, txHash, provider } = parsed.data;
 
   try {
     const auth = await createSupabaseServer();
@@ -60,9 +60,9 @@ export async function POST(req: Request) {
     const previous = await recorded();
     if (previous) return previous;
 
-    const w = await svc.from("wallet_accounts").select("stellar_address, network, provider").eq("user_id", userId).maybeSingle();
+    const w = await svc.from("wallet_accounts").select("stellar_address, network, provider").eq("user_id", userId).eq("provider", provider).maybeSingle();
     if (w.error) return failure("record_failed");
-    if (!w.data || w.data.network !== "TESTNET" || w.data.provider !== "cavos" ||
+    if (!w.data || w.data.network !== "TESTNET" || w.data.provider !== provider ||
         !StrKey.isValidEd25519PublicKey(w.data.stellar_address)) return failure("wallet_not_linked", 409);
     const treasury = process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC;
     if (!treasury || !StrKey.isValidEd25519PublicKey(treasury)) return failure("record_failed");

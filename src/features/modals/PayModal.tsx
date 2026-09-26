@@ -10,9 +10,10 @@ import { r2, short, xlm } from "@/lib/format";
 import { useAyni } from "@/store/ayni";
 import { useUi } from "@/store/ui";
 import { refreshSnapshot } from "@/repositories/supabase";
+import { assertFreighterTestnet, signAndSubmitPayment } from "@/services/stellar/freighter";
 import { ProcSteps, useRail, useSteps } from "./shared";
 
-type PaymentReceipt = { hash: string; amount: string };
+type PaymentReceipt = { hash: string; amount: string; provider?: "cavos" | "freighter" };
 type Phase = { t: "form" } | { t: "processing" } | ({ t: "registering" } & PaymentReceipt)
   | ({ t: "register-error"; message: string } & PaymentReceipt) | ({ t: "done" } & PaymentReceipt);
 
@@ -22,6 +23,10 @@ export function PayModal({ gid }: { gid: string }) {
   const g = useAyni((x) => x.s.groups[gid]) as JuntaGroup;
   const bal = useAyni((x) => x.s.wallet?.bal ?? 0);
   const { wallet } = useCavos();
+  const freighterAddress = useAyni((x) => x.s.wallet?.conn?.freighter?.addr);
+  const [provider, setProvider] = useState<"cavos" | "freighter">("cavos");
+  const [freighterReady, setFreighterReady] = useState(false);
+  const [freighterError, setFreighterError] = useState<string | null>(null);
   const rail = useRail();
   const treasuryAddress = process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC;
   const me = g.members.me;
@@ -34,6 +39,22 @@ export function PayModal({ gid }: { gid: string }) {
   const started = useRef(false);
   const registering = useRef(false);
 
+  useEffect(() => {
+    if (provider !== "freighter" || !freighterAddress) return;
+    let active = true;
+    const check = () => {
+      setFreighterReady(false);
+      void assertFreighterTestnet(freighterAddress).then(() => {
+        if (active) { setFreighterReady(true); setFreighterError(null); }
+      }).catch((error: unknown) => {
+        if (active) setFreighterError(error instanceof Error ? error.message : "No se pudo comprobar Freighter.");
+      });
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => { active = false; window.removeEventListener("focus", check); };
+  }, [provider, freighterAddress]);
+
   const registerPayment = async (payment: PaymentReceipt) => {
     if (registering.current) return;
     registering.current = true;
@@ -42,7 +63,7 @@ export function PayModal({ gid }: { gid: string }) {
       const response = await fetch("/api/stellar/contribution", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ txHash: payment.hash, groupId: gid }),
+        body: JSON.stringify({ txHash: payment.hash, groupId: gid, ...(payment.provider === "freighter" ? { provider: "freighter" } : {}) }),
       });
       const result = await response.json() as { ok?: boolean; message?: string };
       if (!response.ok || !result.ok) {
@@ -69,7 +90,7 @@ export function PayModal({ gid }: { gid: string }) {
     started.current = true;
     const pay = async () => {
       if (rail.kind === "stellar-testnet") {
-        if (wallet?.chain !== "stellar" || wallet.status === "needs-device-approval") {
+        if (provider === "cavos" && (wallet?.chain !== "stellar" || wallet.status === "needs-device-approval")) {
           throw new Error("Conecta una wallet Cavos Stellar autorizada para continuar.");
         }
         if (!treasuryAddress?.startsWith("G")) {
@@ -84,6 +105,13 @@ export function PayModal({ gid }: { gid: string }) {
 
         const amountStroops = BigInt(due.amountStroops);
         if (amountStroops <= 0n) throw new Error("No tienes cuota pendiente.");
+        if (provider === "freighter") {
+          if (!freighterAddress) throw new Error("Conecta Freighter desde Billetera.");
+          const hash = await signAndSubmitPayment({ from: freighterAddress, to: treasuryAddress, amountStroops, memo: "AYNI:" + gid.replaceAll("-", "").slice(0, 20) });
+          await registerPayment({ hash, amount: xlm(Number(amountStroops) / 10_000_000), provider: "freighter" });
+          return;
+        }
+        if (wallet?.chain !== "stellar") throw new Error("Conecta una wallet Cavos Stellar autorizada para continuar.");
         const hash = await wallet.execute(
           amountStroops,
           process.env.NEXT_PUBLIC_STELLAR_TREASURY_PUBLIC!,
@@ -98,6 +126,12 @@ export function PayModal({ gid }: { gid: string }) {
 
     void pay()
       .catch((e) => {
+        if (provider === "freighter") {
+          started.current = false;
+          setFreighterError(e instanceof Error ? e.message : "No se pudo completar el pago.");
+          setPhase({ t: "form" });
+          return;
+        }
         close();
         toast(e instanceof Error && e.message ? e.message : "No se pudo completar el pago");
       });
@@ -110,11 +144,11 @@ export function PayModal({ gid }: { gid: string }) {
     return (
       <Sheet onClose={close}>
         <h3 id="sh-t">{phase.t === "registering" ? "Registrando aporte" : "Registro pendiente"}</h3>
-        <p className="muted">Los XLM ya fueron enviados. Conserva este hash para completar el registro.</p>
+        <p className="muted">{phase.provider === "freighter" ? "El envío se ha solicitado. Conserva este hash para verificarlo y completar el registro sin repetir el pago." : "Los XLM ya fueron enviados. Conserva este hash para completar el registro."}</p>
         <p className="caption num" style={{ overflowWrap: "anywhere" }}>{phase.hash}</p>
         {phase.t === "register-error" ? <>
           <p role="alert">{phase.message}</p>
-          <button className="btn btn-primary btn-block" onClick={() => void registerPayment({ hash: phase.hash, amount: phase.amount })}>Reintentar registro</button>
+          <button className="btn btn-primary btn-block" onClick={() => void registerPayment({ hash: phase.hash, amount: phase.amount, provider: phase.provider })}>Reintentar registro</button>
         </> : <p role="status">Verificando el pago y actualizando el grupo…</p>}
       </Sheet>
     );
@@ -154,8 +188,24 @@ export function PayModal({ gid }: { gid: string }) {
       {rail.kind === "demo" ? (
         <div className="bal-line" style={{ marginTop: 12 }}><span>Se debitará de tu billetera</span><span>Saldo: <span className="num">{xlm(bal)}</span></span></div>
       ) : (
-        <div className="bal-line" style={{ marginTop: 12 }}><span>Se pagará desde tu wallet Freighter</span><span>Stellar Testnet</span></div>
+        <div className="bal-line" style={{ marginTop: 12 }}><span>Se pagará desde tu wallet {provider === "cavos" ? "Cavos" : "Freighter"}</span><span>Stellar Testnet</span></div>
       )}
+      {rail.kind === "stellar-testnet" && freighterAddress ? <fieldset className="pay-wallet-selector">
+        <legend>Wallet para este pago</legend>
+        <div className="pay-wallet-options">
+          <label className="pay-wallet-option">
+            <span className="pay-wallet-copy"><b>Cavos</b><small>Wallet embebida</small></span>
+            <span className="pay-wallet-selected" aria-hidden="true">Seleccionada</span>
+            <input type="radio" name="payment-wallet" aria-label="Pagar con Cavos" checked={provider === "cavos"} onChange={() => setProvider("cavos")} />
+          </label>
+          <label className="pay-wallet-option">
+            <span className="pay-wallet-copy"><b>Freighter</b><small>Extensión Stellar</small></span>
+            <span className="pay-wallet-selected" aria-hidden="true">Seleccionada</span>
+            <input type="radio" name="payment-wallet" aria-label="Pagar con Freighter" checked={provider === "freighter"} onChange={() => setProvider("freighter")} />
+          </label>
+        </div>
+      </fieldset> : null}
+      {provider === "freighter" && freighterError ? <p className="err" role="alert">{freighterError}</p> : null}
       {rail.kind === "demo" && demoCanPay?.ok ? (
         <button className="btn btn-primary btn-block" style={{ marginTop: 16 }} id="pay-go" autoFocus onClick={() => setPhase({ t: "processing" })}>
           <Icon name="finger" />Confirmar con mi huella
@@ -165,9 +215,11 @@ export function PayModal({ gid }: { gid: string }) {
           <span>Saldo insuficiente: te faltan {xlm(r2(demoCanPay.missing))}</span>
           <button className="btn btn-accent btn-sm" id="pay-top" onClick={() => open({ t: "topup", ctx: { gid, need: r2(due0 - bal) } })}>Recargar billetera</button>
         </div>
+      ) : provider === "freighter" ? (
+        <button className="btn btn-primary btn-block" style={{ marginTop: 16 }} id="pay-go" disabled={!freighterReady || !freighterAddress || !treasuryAddress?.startsWith("G")} onClick={() => setPhase({ t: "processing" })}>Pagar con Freighter</button>
       ) : cavosCanPay ? (
         <button className="btn btn-primary btn-block" style={{ marginTop: 16 }} id="pay-go" autoFocus onClick={() => setPhase({ t: "processing" })}>
-          <Icon name="finger" />Aportar con Cavos
+          <Icon name="finger" />Pagar con Cavos
         </button>
       ) : (
         <div className="warn"><span>Conecta una wallet Cavos Stellar autorizada y configura el destino Testnet.</span></div>

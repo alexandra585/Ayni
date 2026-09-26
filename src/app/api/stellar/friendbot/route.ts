@@ -19,7 +19,7 @@ export async function POST(req: Request) {
 
     // La dirección procede únicamente de la wallet vinculada al usuario autenticado.
     const { data: account, error: lookupError } = await supabase.from("wallet_accounts")
-      .select("stellar_address, provider, network").eq("user_id", user.id).maybeSingle();
+      .select("stellar_address, provider, network").eq("user_id", user.id).eq("provider", "cavos").maybeSingle();
     if (lookupError) return failure("No se pudo consultar tu wallet vinculada.", 500);
     if (!account || account.provider !== "cavos" || account.network !== "TESTNET" ||
         typeof account.stellar_address !== "string" || !account.stellar_address.startsWith("G") ||
